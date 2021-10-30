@@ -49,8 +49,8 @@ EXPR_GRAMMAR = {
     '<binarynumber>': [
         [*list('0b'),'<digits>']
     ],
-    '<letter>': [[s] for s in (string.ascii_letters)],
-    '<identifier_char>': [[i] for i in (string.ascii_letters + string.digits)],
+    '<letter>': [[s] for s in (string.ascii_letters + '_')],
+    '<identifier_char>': [[i] for i in (string.ascii_letters + string.digits + '._')],
     '<digits>': [
         ['<digit>','<digits>'],
         ['<digit>']],
@@ -59,6 +59,81 @@ EXPR_GRAMMAR = {
 START = '<start>'
 TOKENS = ['<number>', '<identifier>']
 
+class ExprSemantics:
+    def __init__(self, tree, env):
+        self.env = env
+        self.tree = tree
+
+    def lookup(self, dotted, env):
+        if '.' not in dotted:
+            # process env
+            if isinstance(dotted, ExprEvaluator):
+                return (dotted.eval(env))
+            else:
+                return (env[dotted])
+        lst = dotted.split('.')
+        val = env
+        while lst:
+            env = val
+            first, *lst = lst
+            val = env[first]
+
+        # process env
+        if isinstance(val, ExprEvaluator):
+            return (val.eval(env))
+        else:
+            return (val)
+
+    def eval(self):
+        return self.tree_eval(self.tree)
+
+    def tree_eval(self, tree):
+        name, children = tree
+        if name == '<start>':
+            return self.tree_eval(children[0])
+        elif name == '<number>':
+            return (children[0][0])
+        elif name == '<identifier>':
+            key = children[0][0]
+            return self.lookup(key, self.env)
+        elif name == '<bexpr>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif self.with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        elif name == '<expr>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif self.with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        elif name == '<term>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif self.with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        elif name == '<fact>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif self.with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        else:
+            assert False, name
+
+    def with_paren(self, children):
+        return (children[0][0], children[-1][0]) == ('(', ')')
+
 class ExprEvaluator:
     def __init__(self, src):
         parser = P.EarleyParser(EXPR_GRAMMAR)
@@ -66,7 +141,7 @@ class ExprEvaluator:
         self.tree = self.cleanup_tree(t_)
 
     def eval(self, env):
-        result = self.tree_eval(self.tree)
+        result = ExprSemantics(self.tree, env).eval()
         return result
 
     def detokenize(self, tokens, tree):
@@ -100,58 +175,6 @@ class ExprEvaluator:
         t2 = self.delistify(t1)
         return t2
 
-    def with_paren(children):
-        return (children[0][0], children[-1][0]) == ('(', ')')
-
-    def tree_eval(self, tree):
-        name, children = tree
-        if name == '<start>':
-            return self.tree_eval(children[0])
-        elif name == '<number>':
-            return (children[0][0])
-        elif name == '<identifier>':
-            return 0x0
-        elif name == '<bexpr>':
-            if len(children) == 1:
-                return self.tree_eval(children[0])
-            elif with_paren(children):
-                return self.tree_eval((name, children[1:-1]))
-            else:
-                operator = children[1][0]
-                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
-        elif name == '<expr>':
-            if len(children) == 1:
-                return self.tree_eval(children[0])
-            elif with_paren(children):
-                return self.tree_eval((name, children[1:-1]))
-            else:
-                operator = children[1][0]
-                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
-        elif name == '<term>':
-            if len(children) == 1:
-                return self.tree_eval(children[0])
-            elif with_paren(children):
-                return self.tree_eval((name, children[1:-1]))
-            else:
-                operator = children[1][0]
-                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
-        elif name == '<fact>':
-            if len(children) == 1:
-                return self.tree_eval(children[0])
-            elif with_paren(children):
-                return self.tree_eval((name, children[1:-1]))
-            else:
-                operator = children[1][0]
-                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
-        else:
-            assert False, name
-
-    def eval(self, string):
-        v = P.EarleyParser(EXPR_GRAMMAR)
-        t_ = list(v.parse_on(key.replace(' ',''), START))[0]
-        t0 = cleanup_tree(t_)
-        result = self.tree_eval(t0)
-        return result
 
 CHARS = string.ascii_uppercase + string.digits
 def randstring(n):
@@ -163,6 +186,24 @@ def randbytes(n):
 # Load meta data.
 
 class BasicGenerators:
+    def unwrap(self, val):
+        if isinstance(val, tuple):
+            typ = val[1]
+            value = val[0]
+            bo = val[2]
+            return int.from_bytes(value, byteorder=bo)
+        else:
+            return val
+
+    def get_endian(self):
+        if self.default_endian is None:
+            return 'big'
+        elif self.default_endian == 'le':
+            return 'little'
+        elif self.default_endian == 'be':
+            return 'big'
+        assert False
+
     def dispatch(self, my_type, attrib):
         if my_type == 'u1':
             return self.gen_u1()
@@ -188,36 +229,36 @@ class BasicGenerators:
             assert False
     # integers
     def gen_u1(self):
-        return (randbytes(1), 'u1')
+        return (randbytes(1), 'u1', self.get_endian())
     def gen_u2(self):
-        return (randbytes(2), 'u2')
+        return (randbytes(2), 'u2', self.get_endian())
     def gen_u4(self):
-        return (randbytes(4), 'u4')
+        return (randbytes(4), 'u4', self.get_endian())
     def gen_s1(self):
-        return (randbytes(1), 's1')
+        return (randbytes(1), 's1', self.get_endian())
     def gen_s2(self):
-        return (randbytes(2), 's2')
+        return (randbytes(2), 's2', self.get_endian())
     def gen_s4(self):
-        return (randbytes(4), 's4')
+        return (randbytes(4), 's4', self.get_endian())
     # floating point
     def gen_f4(self):
-        return (randbytes(4), 'f4')
+        return (randbytes(4), 'f4', self.get_endian())
     def gen_f8(self):
-        return (randbytes(8), 'f8')
+        return (randbytes(8), 'f8', self.get_endian())
 
     def gen_bytes(self, length):
-        return (randbytes(length), '_')
+        return (randbytes(length), '_', self.get_endian())
 
     def gen_string(self, length, encoding):
         #length = elt['size']
         #encoding = elt['encoding']
         s = randstring(length)
-        return (bytes(s, encoding), 'str')
+        return (bytes(s, encoding), 'str', self.get_endian())
 
     def gen_contents(self, elt):
         c = elt['contents']
         if isinstance(c, str): # A UTF-8 string e.g. JFIF is [0x4A, 0x46, 0x49, 0x46]
-            return (c.encode(), 'str')
+            return (c.encode(), 'str', self.get_endian())
         elif isinstance(c, list):
             # A list of bytes in hex. e.g. [0x4A, 0x46, 0x49, 0x46] or in decimal
             # or [0xCA, 0xFE, 0xBA, 0xBE]
@@ -289,7 +330,9 @@ class KaitaiFuzz(KaitaiFuzz):
 
         for attr in sequence:
             assert 'repeat' not in attr
-            assert 'if' not in attr
+            if 'if' in attr:
+                result = ExprEvaluator(attr['if']).eval(my_env)
+                if not result: continue
             # KaitaiStruct calls them attributes.
             env, out = self.gen_attribute(attr, my_env)
             assert attr['id'] in env
@@ -323,11 +366,11 @@ class KaitaiFuzz(KaitaiFuzz):
         my_id = attrib['id']
         if 'contents' in attrib:
             res = self.gen_contents(attrib)
-            return {my_id: res}, res
+            return {my_id: self.unwrap(res)}, res
         else:
             if 'type' not in attrib:
                 res = self.gen_bytes(attrib['size'])
-                return {my_id: res}, res
+                return {my_id: self.unwrap(res)}, res
             else:
                 my_type = attrib['type']
                 if isinstance(my_type, str):
@@ -335,14 +378,14 @@ class KaitaiFuzz(KaitaiFuzz):
                         env, res =  self.gen_seq(self.types[my_type])
                         return {my_id: env}, res
                     res = self.dispatch(my_type, attrib)
-                    return {my_id: res}, res
+                    return {my_id: self.unwrap(res)}, res
                 elif isinstance(my_type, dict):
                     my_type = self.switch_on(my_type, attrib)
                     if my_type in self.types:
                         env, res =  self.gen_seq(self.types[my_type])
                         return {my_id: env}, res
                     res = self.dispatch(my_type, attrib)
-                    return {my_id: res}, res
+                    return {my_id: self.unwrap(res)}, res
                 else:
                     assert False
 
