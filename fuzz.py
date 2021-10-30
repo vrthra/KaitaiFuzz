@@ -1,102 +1,223 @@
-#import kaitaistruct
-#import gif
-
-#g = gif.Gif.from_file("handtinyblack.gif")
-
-#print("width = %d" % (g.logical_screen.image_width))
-#print("height = %d" % (g.logical_screen.image_height))
 import yaml
 import json
 import sys
 import string
 import random
+import earleyparser as P
 
+EXPR_GRAMMAR = {
+    '<start>': [['<bexpr>']],
+    '<bexpr>': [
+        ['<expr>', *list('!='), '<bexpr>'],
+        ['<expr>', *list('=='), '<bexpr>'],
+        ['<expr>', '<', '<bexpr>'],
+        ['<expr>', '>', '<bexpr>'],
+        ['<expr>', *list('>='), '<bexpr>'],
+        ['<expr>', *list('<='), '<bexpr>'],
+        ['(','<bexpr>', ')'],
+        ['<expr>']
+        ],
+    '<expr>': [
+        ['<term>', '+', '<expr>'],
+        ['<term>', '-', '<expr>'],
+        ['(', '<expr>', ')'],
+        ['<term>']
+        ],
+    '<term>': [
+        ['<fact>', '*', '<term>'],
+        ['<fact>', '/', '<term>'],
+        ['<fact>', '&', '<term>'],
+        ['<fact>', *list('<<'), '<term>'],
+        ['(', '<term>', ')'],
+        ['<fact>']],
+    '<fact>': [
+        ['<number>'],
+        ['<identifier>'],
+        ['(','<expr>',')']
+        ],
+    '<identifier>': [
+        ['<letter>', '<identifier_charz>']
+    ],
+    '<identifier_charz>': [
+        ['<identifier_char>', '<identifier_charz>'],
+        []
+    ],
+    '<number>': [
+        ['<binarynumber>'],
+        ['<digits>']
+    ],
+    '<binarynumber>': [
+        [*list('0b'),'<digits>']
+    ],
+    '<letter>': [[s] for s in (string.ascii_letters)],
+    '<identifier_char>': [[i] for i in (string.ascii_letters + string.digits)],
+    '<digits>': [
+        ['<digit>','<digits>'],
+        ['<digit>']],
+    '<digit>': [["%s" % str(i)] for i in range(10)],
+}
+START = '<start>'
+TOKENS = ['<number>', '<identifier>']
 
-def randbytes(n):
-    return bytes([random.randrange(0, 256) for _ in range(n)])
+class ExprEvaluator:
+    def __init__(self, src):
+        parser = P.EarleyParser(EXPR_GRAMMAR)
+        t_ = list(parser.parse_on(src.replace(' ',''), START))[0]
+        self.tree = self.cleanup_tree(t_)
+
+    def eval(self, env):
+        result = self.tree_eval(self.tree)
+        return result
+
+    def detokenize(self, tokens, tree):
+        name, children = tree
+        if not children: return (name, [])
+        if name in tokens: return (name, [(P.tree_to_str(tree), [])])
+        return (name, [self.detokenize(tokens, c) for c in children])
+
+    def is_nonterminal(self, t):
+        return t and ((t[0],t[-1]) == ('<', '>'))
+
+    def delistify(self, tree):
+        name, children = tree
+        if not children: return (name, [])
+        new_children = []
+        last_is_terminal=False
+        for c in children:
+            if self.is_nonterminal(c[0]):
+                new_children.append(c)
+                last_is_terminal=False
+            else:
+                if last_is_terminal:
+                    new_children[-1][0] = new_children[-1][0] + c[0]
+                else:
+                    new_children.append(list(c))
+                last_is_terminal=True
+        return (name, [self.delistify(c) for c in new_children])
+
+    def cleanup_tree(self, t):
+        t1 = self.detokenize(TOKENS, t)
+        t2 = self.delistify(t1)
+        return t2
+
+    def with_paren(children):
+        return (children[0][0], children[-1][0]) == ('(', ')')
+
+    def tree_eval(self, tree):
+        name, children = tree
+        if name == '<start>':
+            return self.tree_eval(children[0])
+        elif name == '<number>':
+            return (children[0][0])
+        elif name == '<identifier>':
+            return 0x0
+        elif name == '<bexpr>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        elif name == '<expr>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        elif name == '<term>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        elif name == '<fact>':
+            if len(children) == 1:
+                return self.tree_eval(children[0])
+            elif with_paren(children):
+                return self.tree_eval((name, children[1:-1]))
+            else:
+                operator = children[1][0]
+                return (self.tree_eval(children[0]), operator, self.tree_eval(children[2]))
+        else:
+            assert False, name
+
+    def eval(self, string):
+        v = P.EarleyParser(EXPR_GRAMMAR)
+        t_ = list(v.parse_on(key.replace(' ',''), START))[0]
+        t0 = cleanup_tree(t_)
+        result = self.tree_eval(t0)
+        return result
 
 CHARS = string.ascii_uppercase + string.digits
 def randstring(n):
     return ''.join(random.choice(CHARS) for _ in range(n))
 
-class KaitaiFuzz:
-    def __init__(self, fn):
-        self.default_endian = None
-        self.out_buffer = []
-        self.json_out = []
-        self.scope_stack = []
-        self.enums = {}
+def randbytes(n):
+    return bytes([random.randrange(0, 256) for _ in range(n)])
 
-        self.load_struct(fn)
+# Load meta data.
 
-    def fuzz(self):
-        self.gen_seq(self.data, self.json_out) # pass a list to seq.
-        return self.json_out
-
-    def out(self, var, o):
-        assert isinstance(var, bytes)
-        self.out_buffer.append(var)
-        # Need to store the size also.
-        o.append((var, len(var)))
-
-    def get_endian(self):
-        if self.default_endian is None:
-            return 'big'
-        elif self.default_endian == 'le':
-            return 'little'
-        elif self.default_endian == 'be':
-            return 'big'
-        assert False
-
-    def load_struct(self, fn):
-        with open(fn) as f:
-            self.data = yaml.safe_load(f)
-        self.load_meta()
-        self.load_types()
-        self.load_enums()
-
-    def load_enums(self):
-        if 'enums' in self.data:
-            enums = self.data['enums']
-            for k in enums:
-                self.enums[k] = enums[k]
+class BasicGenerators:
+    def dispatch(self, my_type, attrib):
+        if my_type == 'u1':
+            return self.gen_u1()
+        elif my_type == 'u2':
+            return self.gen_u2()
+        elif my_type == 'u4':
+            return self.gen_u4()
+        elif my_type == 'f4':
+            return self.gen_f4()
+        elif my_type == 'f8':
+            return self.gen_f8()
+        elif my_type == 's1':
+            return self.gen_s1()
+        elif my_type == 's2':
+            return self.gen_s2()
+        elif my_type == 's4':
+            return self.gen_s4()
+        elif my_type == 's8':
+            return self.gen_s8()
+        elif my_type == 'str':
+            return self.gen_string(attrib['size'], attrib['encoding'])
         else:
-            self.enums = {}
-
+            assert False
     # integers
-    def gen_u1(self, o):
-        self.out(randbytes(1), o)
-    def gen_u2(self, o):
-        self.out(randbytes(2), o) 
-    def gen_u4(self, o):
-        self.out(randbytes(4), o) 
-    def gen_s1(self, o):
-        self.out(randbytes(1), o) 
-    def gen_s2(self, o):
-        self.out(randbytes(2), o) 
-    def gen_s4(self, o):
-        self.out(randbytes(4), o) 
-
+    def gen_u1(self):
+        return (randbytes(1), 'u1')
+    def gen_u2(self):
+        return (randbytes(2), 'u2')
+    def gen_u4(self):
+        return (randbytes(4), 'u4')
+    def gen_s1(self):
+        return (randbytes(1), 's1')
+    def gen_s2(self):
+        return (randbytes(2), 's2')
+    def gen_s4(self):
+        return (randbytes(4), 's4')
     # floating point
-    def gen_f4(self, o):
-        self.out(randbytes(4), o) 
-    def gen_f8(self, o):
-        self.out(randbytes(8), o) 
+    def gen_f4(self):
+        return (randbytes(4), 'f4')
+    def gen_f8(self):
+        return (randbytes(8), 'f8')
 
-    def gen_bytes(self, elt, o):
-        length = elt['size']
-        self.out(randbytes(length), o) 
+    def gen_bytes(self, length):
+        return (randbytes(length), '_')
 
-    def gen_string(self, elt, o):
-        length = elt['size']
-        encoding = elt['encoding']
+    def gen_string(self, length, encoding):
+        #length = elt['size']
+        #encoding = elt['encoding']
         s = randstring(length)
-        self.out(bytes(s, encoding), o)
+        return (bytes(s, encoding), 'str')
 
-    def gen_contents(self, elt, o):
+    def gen_contents(self, elt):
         c = elt['contents']
         if isinstance(c, str): # A UTF-8 string e.g. JFIF is [0x4A, 0x46, 0x49, 0x46]
-            self.out(c.encode(), o)
+            return (c.encode(), 'str')
         elif isinstance(c, list):
             # A list of bytes in hex. e.g. [0x4A, 0x46, 0x49, 0x46] or in decimal
             # or [0xCA, 0xFE, 0xBA, 0xBE]
@@ -105,124 +226,127 @@ class KaitaiFuzz:
         else:
             raise NotImplemented()
 
-    def scope_lookup(self, var):
-        cur_scope = self.scope_stack[-1]
-        lst = [elt for elt in cur_scope if var in elt]
-        return lst
+class KaitaiFuzz(BasicGenerators):
+    def __init__(self, fn):
+        self.title = None
+        self.id = None
+        self.default_endian = None
+        # enums are at the top level.
+        self.enums = {}
+        self.load_struct(fn)
 
-    def dispatch(self, my_type, elt, olst):
-        if my_type in self.types:
-            self.gen_seq(self.types[my_type], olst)
-        elif my_type == 'u1':
-            self.gen_u1(olst)
-        elif my_type == 'u2':
-            self.gen_u2(olst)
-        elif my_type == 'u4':
-            self.gen_u4(olst)
-        elif my_type == 'f4':
-            self.gen_f4(olst)
-        elif my_type == 'f8':
-            self.gen_f8(olst)
-        elif my_type == 's1':
-            self.gen_s1(olst)
-        elif my_type == 's2':
-            self.gen_s2(olst)
-        elif my_type == 's4':
-            self.gen_s4(olst)
-        elif my_type == 's8':
-            self.gen_s8(olst)
-        elif my_type == 'str':
-            self.gen_string(elt, olst)
-        else:
-            assert False
-
-    def gen_element(self, elt, odict): 
-        my_id = elt['id']
-        olst = []
-        odict[elt['id']] = olst
-        if 'contents' in elt:
-            self.gen_contents(elt, olst)
-        else:
-            if 'type' not in elt:
-                self.gen_bytes(elt, olst)
-            else:
-                my_type = elt['type'] 
-                if isinstance(my_type, str):
-                    self.dispatch(my_type, elt, olst)
-                elif isinstance(my_type, dict):
-                    var = my_type['switch-on']
-                    cases = my_type['cases']
-                    #self.enums[var]key is int, and val is desc.
-                    possible_values = [k for k in self.enums[var]]
-                    # is it one of them? If not, set it to one of the above.
-                    # look in the scope for our var.
-                    val_lst = self.scope_lookup(var)
-                    val, length = val_lst[0][var][0]
-                    ival = int.from_bytes(val, self.get_endian())
-                    my_type = None
-                    if ival in possible_values:
-                        my_type = self.enums[var][ival]
-                    else:
-                        ival = random.choice(possible_values)
-                        bval = ival.to_bytes(length, byteorder=self.get_endian())
-                        val_lst[0][var][0] = (bval, length)
-                        my_type = self.enums[var][ival]
-
-                    self.dispatch(my_type, elt, olst)
-                else:
-                    assert False
-
-    def gen_seq(self, data, olst):
-        seq = data['seq']
-        self.scope_stack.append(olst)
-        for elt in seq:
-            odict = {}
-            olst.append(odict)
-            # check if it has a 'repeat' mode
-            if 'repeat' in elt:
-                assert False
-            elif 'if' in elt:
-                # get the if condition
-                cond = elt['if']
-                # remove the last variable, the remaining is the scope.
-                assert False
-            else:
-                self.gen_element(elt, odict)
-
-        # now parse instances too
-        if 'instances' in data:
-            instances = data['instances']
-            my_env = {list(v.keys())[0]:int.from_bytes(list(v.values())[0][0][0], self.get_endian()) for v in olst}
-            for prop_key in instances:
-                value = instances[prop_key]['value']
-                res = eval(value, {}, my_env)
-                odict= {'$' + prop_key: res}
-                olst.append(odict)
-                # evaluate it, put it under $name
-
-        self.scope_stack.pop()
+    def load_struct(self, fname):
+        with open(fname) as f:
+            self.data = yaml.safe_load(f)
+        self.load_meta()
+        self.load_types()
+        self.load_enums()
 
     def load_meta(self):
         metadata = self.data['meta']
-        self.default_endian = metadata['endian'] # le, be
-        #print(data['id'], data['title'], data['endian'])
-
-    def load_seqelt(self, elt):
-        my_id = elt['id']
-        my_type = elt['type']
-        # does it have contents?
-        if 'contents' in elt:
-            print(elt['contents'])
-        print(my_id, repr(my_type))
-        #print(json.dumps(elt, indent=4))
+        self.default_endian = metadata['endian']
+        self.title = metadata.get('title', None)
+        self.id = metadata['id']
 
     def load_types(self):
-        if 'types' in self.data:
-            self.types = self.data['types']
-        else:
-            self.types = {}
+        # may not exist
+        self.types = self.data.get('types', {})
 
-import sys
-v = KaitaiFuzz(sys.argv[1]).fuzz()
-for k in v:
-    print(k)
+    def load_enums(self):
+        self.enums = self.data.get('enums', {})
+
+# Start fuzzing
+
+class KaitaiFuzz(KaitaiFuzz):
+    def fuzz(self):
+        env, res = self.gen_seq(self.data)
+        return res
+
+# a sequence in KaitaiStruct is weird. It looks like a list, but it is
+# actually a map which can be accessed by the `id` key.
+# So, we need an environment where each processed keys are defined.
+
+class KaitaiFuzz(KaitaiFuzz):
+    def gen_seq(self, data):
+        sequence = data['seq']
+        my_env = {}
+        my_result = []
+
+        # We need to define instances before processing seq because
+        # seq attributes can refer to instances. For now, we only
+        # deal with value instances. One problem is that instances
+        # can also refer to members. So, we go for a bit of
+        # reprocessing. First, we iterate through seq, looking for
+        # ids, define them in our environment, then implement
+        # instances and finally, process the attributes.
+
+        #all_eval = ['%s=lambda: O["%s"]' % (attr['id'], attr['id']) for attr in seq]
+        my_instances = data.get('instances', {})
+        my_value_fns = []
+        for prop_key in my_instances:
+            value = my_instances[prop_key]['value']
+            my_env[prop_key] = ExprEvaluator(value)
+
+        for attr in sequence:
+            assert 'repeat' not in attr
+            assert 'if' not in attr
+            # KaitaiStruct calls them attributes.
+            env, out = self.gen_attribute(attr, my_env)
+            assert attr['id'] in env
+            my_result.append(out)
+            my_env.update(env)
+
+        return my_env, my_result
+
+class KaitaiFuzz(KaitaiFuzz):
+    def switch_on(self, my_type, attrib):
+        var = my_type['switch-on']
+        cases = my_type['cases']
+        #self.enums[var]key is int, and val is desc.
+        possible_values = [k for k in self.enums[var]]
+        # is it one of them? If not, set it to one of the above.
+        # look in the scope for our var.
+        val_lst = self.scope_lookup(var)
+        val, length = val_lst[0][var][0]
+        ival = int.from_bytes(val, self.get_endian())
+        my_type = None
+
+        if ival in possible_values:
+            return self.enums[var][ival]
+        else:
+            ival = random.choice(possible_values)
+            bval = ival.to_bytes(length, byteorder=self.get_endian())
+            val_lst[0][var][0] = (bval, length)
+            return self.enums[var][ival]
+
+    def gen_attribute(self, attrib, env):
+        my_id = attrib['id']
+        if 'contents' in attrib:
+            res = self.gen_contents(attrib)
+            return {my_id: res}, res
+        else:
+            if 'type' not in attrib:
+                res = self.gen_bytes(attrib['size'])
+                return {my_id: res}, res
+            else:
+                my_type = attrib['type']
+                if isinstance(my_type, str):
+                    if my_type in self.types:
+                        env, res =  self.gen_seq(self.types[my_type])
+                        return {my_id: env}, res
+                    res = self.dispatch(my_type, attrib)
+                    return {my_id: res}, res
+                elif isinstance(my_type, dict):
+                    my_type = self.switch_on(my_type, attrib)
+                    if my_type in self.types:
+                        env, res =  self.gen_seq(self.types[my_type])
+                        return {my_id: env}, res
+                    res = self.dispatch(my_type, attrib)
+                    return {my_id: res}, res
+                else:
+                    assert False
+
+
+kf = KaitaiFuzz(sys.argv[1])
+res = kf.fuzz()
+print(res)
