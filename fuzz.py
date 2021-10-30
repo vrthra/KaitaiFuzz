@@ -84,8 +84,16 @@ class ExprSemantics:
         else:
             return (val)
 
+    def unwrap_tuples(self, tup):
+        if isinstance(tup, tuple):
+            return ''.join([self.unwrap_tuples(t) for t in tup])
+        else:
+            return str(tup)
+
     def eval(self):
-        return self.tree_eval(self.tree)
+        t_src = self.tree_eval(self.tree)
+        s = self.unwrap_tuples(t_src)
+        return eval(s)
 
     def tree_eval(self, tree):
         name, children = tree
