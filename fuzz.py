@@ -14,13 +14,13 @@ EXPR_GRAMMAR = {
         ['<expr>', '>', '<bexpr>'],
         ['<expr>', *list('>='), '<bexpr>'],
         ['<expr>', *list('<='), '<bexpr>'],
-        ['(','<bexpr>', ')'],
+        #['(','<bexpr>', ')'],
         ['<expr>']
         ],
     '<expr>': [
         ['<term>', '+', '<expr>'],
         ['<term>', '-', '<expr>'],
-        ['(', '<expr>', ')'],
+        #['(', '<expr>', ')'],
         ['<term>']
         ],
     '<term>': [
@@ -28,12 +28,12 @@ EXPR_GRAMMAR = {
         ['<fact>', '/', '<term>'],
         ['<fact>', '&', '<term>'],
         ['<fact>', *list('<<'), '<term>'],
-        ['(', '<term>', ')'],
+        #['(', '<term>', ')'],
         ['<fact>']],
     '<fact>': [
         ['<number>'],
         ['<identifier>'],
-        ['(','<expr>',')']
+        ['(','<bexpr>',')']
         ],
     '<identifier>': [
         ['<letter>', '<identifier_charz>']
